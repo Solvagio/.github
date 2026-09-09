@@ -1,0 +1,11 @@
+
+# AI-assistant docs / config — never version these (policy)
+CLAUDE.md
+CLAUDE_*.md
+AGENTS.md
+GEMINI.md
+.cursor/
+.cursorrules
+.aider*
+.windsurfrules
+.github/copilot-instructions.md
