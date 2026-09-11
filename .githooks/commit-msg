@@ -1,0 +1,65 @@
+#!/bin/sh
+# .githooks/commit-msg
+# Message SHAPE: the blank line between subject and body, and a sane subject length.
+#
+# Refuses two things:
+#
+#   1. A second line that is not blank. Git reads everything up to the first
+#      BLANK line as the SUBJECT, so a message whose body starts on line 2 is
+#      swallowed whole into the subject: `git log --oneline` prints the lot and
+#      `%s` returns it joined with spaces.
+#
+#   2. A subject longer than 120 bytes.
+#
+# Why 120 and not the conventional 72: measured 2026-09-09 across 1788 fleet
+# subjects - median 68, p90 97, p95 110, p99 153. A 72 limit would have refused
+# 40% of them, and a hook that red-lines two commits in five is a hook that gets
+# --no-verify'd, which ORG_RULES section 6 already warns is worse than no hook.
+# 120 refuses 3.3% and nothing written routinely. The blank-line rule scored 8
+# hits across 793 multi-line commits and all 8 were the defect it exists to catch.
+#
+# What it is for: on 2026-09-09 eight commits landed across the fleet carrying
+# subjects of 378-753 characters, because a message assembled in PowerShell
+# contributed one newline where two were needed. `git log -1 --format='|%s'`
+# displayed the defect on every one of them and it was read past. A check a
+# human has to notice is the weakest kind of check.
+#
+# Activated by: git config core.hooksPath .githooks   (once per clone)
+# Bypass once (when you are sure): git commit --no-verify
+
+set -e
+
+MAX_SUBJECT=120
+
+# Git strips comment lines and leading blanks before storing the message, so
+# measure what git will STORE, not what is sitting in the file.
+STORED=$(sed -e '/^#/d' "$1" | sed -e '/./,$!d')
+SUBJECT=$(printf '%s\n' "$STORED" | head -n 1)
+SECOND=$(printf '%s\n' "$STORED" | sed -n '2p')
+
+# Subjects git writes itself, plus the autosquash prefixes.
+case "$SUBJECT" in
+'Merge '* | 'Revert '* | 'fixup! '* | 'squash! '* | 'amend! '*) exit 0 ;;
+esac
+
+fail=0
+
+if [ -n "$SECOND" ]; then
+  echo "commit-msg: line 2 is not blank, so this whole message becomes the SUBJECT." >&2
+  echo "            Put an empty line between the subject and the body." >&2
+  echo "            line 2: $SECOND" >&2
+  fail=1
+fi
+
+n=$(printf '%s' "$SUBJECT" | wc -c | tr -d ' ')
+if [ "$n" -gt "$MAX_SUBJECT" ]; then
+  echo "commit-msg: subject is $n bytes, over the $MAX_SUBJECT-byte limit." >&2
+  echo "            $SUBJECT" >&2
+  fail=1
+fi
+
+if [ "$fail" -ne 0 ]; then
+  echo "commit-msg: refused. Fix the message, or use 'git commit --no-verify' if you are sure." >&2
+  exit 1
+fi
+exit 0

@@ -1,0 +1,50 @@
+#!/bin/sh
+# .githooks/pre-push
+# Solvagio main-branch safety hook.
+#
+# Refuses pushes that would:
+#   1. Force-push to main (rewrites public history).
+#   2. Delete main outright.
+#
+# Server-side branch protection (GitHub repo rules) is the stronger
+# guarantee; this hook is the client-side backstop for free-plan
+# private repos where server-side rulesets aren't enforced. It also
+# catches mistakes during the brief window before the user pushes
+# something they didn't mean to.
+#
+# Activated by setting: git config core.hooksPath .githooks  (once per clone)
+# Bypass once (when you're sure): git push --no-verify
+
+remote="$1"
+url="$2"
+
+# Pre-push receives lines on stdin: <local_ref> <local_sha> <remote_ref> <remote_sha>
+# Zeros (40 zeros) mean "no commit" — either branch creation (local) or deletion (remote).
+ZERO_SHA="0000000000000000000000000000000000000000"
+
+while read local_ref local_sha remote_ref remote_sha; do
+  case "$remote_ref" in
+    refs/heads/main)
+      # Deletion of main: remote_ref present, local_sha is zeros.
+      if [ "$local_sha" = "$ZERO_SHA" ]; then
+        echo "ERROR: refusing to delete main on $remote." >&2
+        echo "  If you really mean to: git push --no-verify $remote :main" >&2
+        exit 1
+      fi
+      # Non-fast-forward (force-push) on main: remote_sha exists and isn't
+      # reachable from local_sha.
+      if [ "$remote_sha" != "$ZERO_SHA" ]; then
+        # git merge-base --is-ancestor remote_sha local_sha → exit 0 means fast-forward.
+        if ! git merge-base --is-ancestor "$remote_sha" "$local_sha" 2>/dev/null; then
+          echo "ERROR: refusing force-push to main on $remote." >&2
+          echo "  Local main does not contain $remote_sha as an ancestor." >&2
+          echo "  Pull, rebase, or fix the divergence — then push without --force." >&2
+          echo "  Or bypass once with: git push --no-verify $remote main" >&2
+          exit 1
+        fi
+      fi
+      ;;
+  esac
+done
+
+exit 0
