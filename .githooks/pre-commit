@@ -92,4 +92,140 @@ if [ -n "$TREE_HITS" ]; then
   exit 1
 fi
 
+
+# ---------------------------------------------------------------------------
+# STAGED-CREDENTIAL SCAN (2026-09-14) - shell copy, for a repo with no toolchain
+# ---------------------------------------------------------------------------
+# The OWNER of the credential-shape list is @solvagio/mortar, subpath ./secret-scan
+# (ORG_RULES rule 13). The thirteen repos with a package.json run its CLI,
+# `mortar-scan-secrets --staged`, and carry no pattern of their own. This repo has no
+# package.json anywhere and deliberately no node toolchain, so the shapes are spelled
+# out here - and that copy is PINNED: Resources/OPS/Scripts/Audit/check-hooks.sh reads
+# SECRET_SHAPE_SOURCE out of the installed mortar and refuses to agree that this hook
+# is protected unless the two are byte-identical. A private copy nobody compares is
+# worse than no copy, because it goes on printing a green line after it has drifted.
+#
+# THE TABLE IS THE ONLY SPELLING OF THE SHAPES IN THIS FILE. The loop below reads it
+# row by row and never needs the joined alternation; check-hooks.sh, which does the
+# pinning, parses this same table out of this file and joins it there before comparing
+# against mortar. So there is one hand-written copy in this repo and nothing anywhere
+# that has to be kept in step with it by hand - which is the defect this fleet keeps
+# finding, and the reason mortar derives SECRET_SHAPE_SOURCE from SECRET_SHAPES rather
+# than keeping a matching string beside it.
+#
+# `::` is the separator because no shape contains a colon - checked, not assumed - and
+# because a tab in a hook does not survive every editor this file passes through.
+#
+# THIS HOOK IS NOT EXCLUDED FROM ITS OWN SCAN, unlike the attribution one above. That
+# exclusion exists because the attribution patterns are plain words and the hook that
+# lists them matches them. These are not: a shape like `-----BEGIN [A-Z ]*PRIVATE
+# KEY-----` does not match the text `-----BEGIN [A-Z ]*PRIVATE KEY-----`, because `[`
+# is not in `[A-Z ]` - and the same is true of all six, because every one of them has a
+# bracket or a paren immediately after its literal prefix. Measured, not assumed, and
+# excluding the file would have bought a permanent blind spot over the one file here
+# guaranteed to be edited by hand.
+SECRET_SHAPE_TABLE='github-token::gh[opsu]_[A-Za-z0-9]{36}
+github-pat::github_pat_[A-Za-z0-9_]{50,}
+slack-token::xox[abprs]-[A-Za-z0-9-]{10,}
+stripe-key::[sr]k_(live|test)_[A-Za-z0-9]{16,}
+aws-access-key-id::AKIA[0-9A-Z]{16}
+private-key-pem::-----BEGIN [A-Z ]*PRIVATE KEY-----'
+
+# DECLARED PATHS - the shell equivalent of mortar's solvagio.secretScanAllow. One path
+# per line, repo-root-relative, matched as a SEGMENT-ALIGNED PREFIX so `docs/ref` never
+# silently covers `docs/reference`. A hit under a declared path is printed as ACCEPTED
+# and does not block; it is still printed, because a fixture that quietly stops being
+# scanned is how a real credential ends up living in one. An empty list is the normal
+# state and means exactly that: nothing here is exempt.
+SECRET_SCAN_ALLOW=''
+
+# STAGED CONTENT, NOT THE WORKING TREE. `git grep --cached` reads the INDEX, which is
+# what the commit will contain. A token pasted into a file, `git add`ed, then tidied
+# out of the working tree is still in the commit, and a disk-reading scanner calls
+# that clean. --diff-filter=ACMR drops deletions: a removal introduces no text.
+set +e
+STAGED_PATHS=$(git diff --cached --name-only --diff-filter=ACMR)
+staged_rc=$?
+set -e
+if [ "$staged_rc" -ne 0 ]; then
+  echo "ERROR: could not list the staged paths (git exit $staged_rc)." >&2
+  echo "  The credential scan COULD NOT LOOK. A scan that did not run is not a scan" >&2
+  echo "  that passed, so the commit is refused." >&2
+  exit 1
+fi
+
+if [ -n "$STAGED_PATHS" ]; then
+  SECRET_BLOCKED=""
+  SECRET_ACCEPTED=""
+  _old_ifs=$IFS
+  IFS='
+'
+  for _row in $SECRET_SHAPE_TABLE; do
+    _name=${_row%%::*}
+    _pat=${_row#*::}
+    # `-e` IS LOAD-BEARING AND COST AN HOUR TO LEARN. One of the six shapes begins with
+    # a dash - `-----BEGIN [A-Z ]*PRIVATE KEY-----` - and without `-e` git parses it as
+    # a run of options and dies with exit 128. Passing it after `-E` is not enough;
+    # only `-e` says "this argument is the pattern". Measured against git 2.55.0: the
+    # first version of this loop reported every repo clean of PEM keys, including the
+    # one with three of them in it.
+    #
+    # TWO PASSES, AND THE ORDER IS THE POINT.
+    #
+    # Pass one is `-l`: it prints PATHS ONLY, so the exit status can be captured into a
+    # variable without the credential's value ever landing in one. git grep answers 0
+    # for matches, 1 for none and 2+ for could-not-look, so `|| true` would report a
+    # scan that never ran as a clean index - the exact false green this hook exists to
+    # remove. The status is kept and tested.
+    #
+    # Pass two only runs when pass one found something, and its output goes straight
+    # down a pipe into `cut -d: -f1,2` - never into a variable. `git grep -n` prints
+    # path:line:THE MATCHING LINE, and the matching line IS the credential. cut is what
+    # keeps the value out of the terminal, the log, and the scrollback. Windows forbids
+    # a colon in a filename, so field 1 is always the whole path.
+    set +e
+    _files=$(git grep --cached -I -l -E -e "$_pat" -- $STAGED_PATHS)
+    _rc=$?
+    set -e
+    if [ "$_rc" -gt 1 ]; then
+      echo "ERROR: the staged-credential scan could not run for shape '$_name'" >&2
+      echo "  (git grep exit $_rc). A scan that did not happen is not a scan that" >&2
+      echo "  passed. Commit refused." >&2
+      exit 1
+    fi
+    [ -n "$_files" ] || continue
+    for _hit in $(git grep --cached -I -n -E -e "$_pat" -- $_files | cut -d: -f1,2); do
+      _hitpath=${_hit%%:*}
+      _declared=""
+      for _allow in $SECRET_SCAN_ALLOW; do
+        [ -n "$_allow" ] || continue
+        case "$_hitpath" in
+          "$_allow" | "$_allow"/*) _declared=1 ;;
+        esac
+      done
+      if [ -n "$_declared" ]; then
+        SECRET_ACCEPTED="$SECRET_ACCEPTED
+  ACCEPTED  $_hit  ($_name, declared)"
+      else
+        SECRET_BLOCKED="$SECRET_BLOCKED
+  $_hit  ($_name)"
+      fi
+    done
+  done
+  IFS=$_old_ifs
+
+  [ -n "$SECRET_ACCEPTED" ] && printf '%s\n' "$SECRET_ACCEPTED"
+
+  if [ -n "$SECRET_BLOCKED" ]; then
+    echo "ERROR: commit blocked - a credential shape is STAGED." >&2
+    printf '%s\n' "$SECRET_BLOCKED" >&2
+    echo "" >&2
+    echo "  Only the path and line are shown; the value is deliberately never printed." >&2
+    echo "  The value is in your INDEX already, so deleting the line is not enough:" >&2
+    echo "  treat the credential as disclosed and rotate it." >&2
+    echo "  A deliberate fixture is DECLARED, by adding its path to SECRET_SCAN_ALLOW" >&2
+    echo "  at the top of this hook, not bypassed with --no-verify." >&2
+    exit 1
+  fi
+fi
 exit 0
