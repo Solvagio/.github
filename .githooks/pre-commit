@@ -228,4 +228,124 @@ if [ -n "$STAGED_PATHS" ]; then
     exit 1
   fi
 fi
+# ---------------------------------------------------------------------------
+# BINARY-ATTRIBUTION SCAN (2026-09-17) - shell copy, for a repo with no toolchain
+# ---------------------------------------------------------------------------
+# ORG_RULES 1 is ANYWHERE, and every attribution scan in this fleet reads TEXT. Each one
+# skips binary extensions by name before it reads a byte, which is how twenty-five brand
+# assets shipped an embedded C2PA provenance manifest naming the tool that drew them while
+# every gate ran green. Widening the scan from the staged diff to the whole tree (17.79)
+# widened WHERE it looked and never widened WHAT it could read.
+#
+# THE OWNER OF THE MARKER LIST IS @solvagio/mortar, subpath ./binary-attribution
+# (ORG_RULES rule 13). The repos with a package.json run its CLI,
+# `mortar-scan-binary-attribution`, and carry no pattern of their own. This repo has no
+# package.json anywhere and deliberately no node toolchain, so the markers are spelled out
+# below - and that copy is PINNED: Resources/OPS/Scripts/Audit/check-hooks.sh reads
+# BINARY_ATTRIBUTION_MARKER_SOURCE out of the installed mortar and refuses to agree that
+# this hook is protected unless the two agree. A private copy nobody compares is worse than
+# no copy, because it goes on printing a green line after it has drifted.
+#
+# WHOLE TREE, NOT THE STAGED DIFF, and that is deliberate: the twenty-five contaminated
+# assets were already committed and pushed when they were found, so a staged-diff check
+# would have had nothing to say about any of them.
+#
+# `-a` IS WHAT MAKES THIS DIFFERENT FROM THE SCAN ABOVE. git grep skips binary files unless
+# told to treat them as text, and `-I` - which the attribution scan above passes on purpose -
+# does the opposite. Without `-a` this loop reads every asset and reports nothing, for ever.
+#
+# `-l` PRINTS PATHS ONLY. The matched bytes are never captured into a variable and never
+# printed, the same rule the credential scan above states: a tool that echoes what it found
+# into a terminal, a log and a scrollback has moved it somewhere worse than where it was.
+BINARY_MARKER_TABLE='c2pa::c2pa
+jumbf::jumbf
+png-cabx-chunk::caBX
+claim-generator::claim_generator
+trained-algorithmic-media::trainedAlgorithmicMedia
+anthropic::anthropic
+claude::claude
+openai::openai
+chatgpt::chatgpt
+midjourney::midjourney
+dall-e::dall-?e
+stable-diffusion::stable *diffusion
+adobe-firefly::adobe *firefly'
+
+# Extensions this scan reads. An ALLOW-list rather than a skip-list, and the direction is
+# the decision: a skip-list that has not heard of a format silently stops scanning it, which
+# is the failure this section exists because of.
+BINARY_ASSET_GLOBS="*.png *.jpg *.jpeg *.gif *.webp *.ico *.svg *.pdf *.woff *.woff2 *.ttf *.eot *.mp4 *.mp3 *.wasm"
+
+# Paths DECLARED as legitimate homes for a provenance marker. A declaration is not a skip:
+# a declared path's findings are still printed and still counted, they simply do not refuse.
+# The only reason to declare one is that the file is SUPPOSED to carry the marker - a
+# marketplace whose own policy requires the disclosure - and the honest way to record that is
+# where a reader will see it.
+BINARY_ATTRIBUTION_ALLOW=""
+
+BIN_BLOCKED=""
+BIN_ACCEPTED=""
+# The pathspecs and the declared paths are space-separated, and the marker table below is
+# read with IFS set to newline. Split them into $@ and into newline-separated form HERE,
+# while IFS is still the default - under the newline IFS they would reach git as one
+# pathspec that matches nothing, which is a guard wired to nothing.
+# shellcheck disable=SC2086
+set -- $BINARY_ASSET_GLOBS
+BINARY_ATTRIBUTION_ALLOW=$(printf '%s\n' $BINARY_ATTRIBUTION_ALLOW)
+_old_ifs=$IFS
+IFS='
+'
+for _row in $BINARY_MARKER_TABLE; do
+  _name=${_row%%::*}
+  _pat=${_row#*::}
+  set +e
+  _files=$(git grep --untracked -a -i -l -E -e "$_pat" -- "$@")
+  _rc=$?
+  set -e
+  if [ "$_rc" -gt 1 ]; then
+    echo "ERROR: the binary-attribution scan could not run for marker '$_name'" >&2
+    echo "  (git grep exit $_rc). A scan that did not happen is not a scan that" >&2
+    echo "  passed. Commit refused." >&2
+    exit 1
+  fi
+  [ -n "$_files" ] || continue
+  for _hitpath in $_files; do
+    _declared=""
+    for _allow in $BINARY_ATTRIBUTION_ALLOW; do
+      [ -n "$_allow" ] || continue
+      case "$_hitpath" in
+        "$_allow" | "$_allow"/*) _declared=1 ;;
+      esac
+    done
+    if [ -n "$_declared" ]; then
+      BIN_ACCEPTED="$BIN_ACCEPTED
+  ACCEPTED  $_hitpath  ($_name, declared)"
+    else
+      BIN_BLOCKED="$BIN_BLOCKED
+  $_hitpath  ($_name)"
+    fi
+  done
+done
+IFS=$_old_ifs
+
+if [ -n "$BIN_ACCEPTED" ]; then
+  printf '%s\n' "$BIN_ACCEPTED"
+fi
+
+if [ -n "$BIN_BLOCKED" ]; then
+  echo "ERROR: commit blocked - AI provenance inside a shipped asset." >&2
+  printf '%s\n' "$BIN_BLOCKED" >&2
+  echo "" >&2
+  echo "  STRIP IT LOSSLESSLY - remove the ancillary chunks, never re-encode:" >&2
+  echo "    PNG   magick <f> -strip <f>      (or: pngcrush -rem allb -brute)" >&2
+  echo "    JPEG  exiftool -all= <f>" >&2
+  echo "    SVG   delete the <metadata> element" >&2
+  echo "    PDF   exiftool -all= <f>" >&2
+  echo "  Then re-run and confirm the pixels are unchanged." >&2
+  echo "  If the marker is CORRECT for that path - a marketplace requires the" >&2
+  echo "  disclosure - add the path to BINARY_ATTRIBUTION_ALLOW in this hook, with" >&2
+  echo "  the reason beside it. Do not reach for --no-verify." >&2
+  exit 1
+fi
+
 exit 0
