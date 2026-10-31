@@ -120,11 +120,12 @@ fi
 # exclusion exists because the attribution patterns are plain words and the hook that
 # lists them matches them. These are not: a shape like `-----BEGIN [A-Z ]*PRIVATE
 # KEY-----` does not match the text `-----BEGIN [A-Z ]*PRIVATE KEY-----`, because `[`
-# is not in `[A-Z ]` - and the same is true of all eight, because every one of them has a
+# is not in `[A-Z ]` - and the same is true of all nine, because every one of them has a
 # bracket or a paren immediately after its literal prefix. Measured, not assumed, and
 # excluding the file would have bought a permanent blind spot over the one file here
 # guaranteed to be edited by hand.
-SECRET_SHAPE_TABLE='github-token::gh[opsu]_[A-Za-z0-9]{36}
+SECRET_SHAPE_TABLE='github-token::gh[opu]_[A-Za-z0-9]{36}
+github-app-token::ghs_[A-Za-z0-9._-]{36,}
 github-pat::github_pat_[A-Za-z0-9_]{50,}
 npm-token::npm_[A-Za-z0-9]{36}
 slack-token::xox[abprs]-[A-Za-z0-9-]{10,}
